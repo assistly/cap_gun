@@ -1,4 +1,7 @@
 require 'etc'
+require 'net/https'
+require 'uri'
+require 'json'
 
 module CapGun
   class Presenter
@@ -57,13 +60,44 @@ module CapGun
     def scm_log_messages
       messages = case capistrano[:scm].to_sym
         when :git
-          `git log #{previous_revision}..#{capistrano[:current_revision]} --pretty=format:%h:%s`
+          if capistrano[:github_token]
+            github_log_messages
+          else
+            `git log #{previous_revision}..#{capistrano[:current_revision]} --pretty=format:%h:%s`
+          end
         when :subversion
           `svn log -r #{previous_revision.to_i+1}:#{capistrano[:current_revision]}`
         else
           "N/A"
       end
       exit_code.success? ? messages : "N/A"
+    end
+
+    def github_log_messages
+      token = capistrano[:github_token]
+      repo  = capistrano[:repository].match(/github\.com.(\w+\/\w+)/)[1]
+      base  = previous_revision
+      head  = capistrano[:current_revision]
+
+      uri = URI.parse("https://api.github.com/repos/#{repo}/compare/#{base}...#{head}")
+      http = Net::HTTP.new(uri.host, uri.port)
+      http.use_ssl = true
+      http.verify_mode = OpenSSL::SSL::VERIFY_NONE
+
+      request = Net::HTTP::Get.new(uri.request_uri)
+      request["Authorization"] = "token #{token}"
+      response = http.request(request)
+
+      if response.code.to_i == 200
+        messages = JSON.parse(response.body)["commits"].map do |c|
+          sha = c["sha"][0...7]
+          message = c["commit"]["message"].split("\n").first
+          "#{sha}:#{message}"
+        end
+        messages.join("\n")
+      else
+        "N/A"
+      end
     end
 
     def exit_code
